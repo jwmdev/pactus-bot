@@ -16,6 +16,7 @@ RUN make build-bot
 FROM alpine:3.14
 RUN apk --no-cache add ca-certificates tzdata git
 RUN mkdir /app
+RUN mkdir bot-data
 COPY --from=builder /app/main /app
 RUN chmod +x /app/main
 CMD ["./app/main"]
