@@ -3,11 +3,8 @@ package client
 import (
 	"context"
 	"errors"
-	"log"
 
-	"github.com/k0kubun/pp"
-	"github.com/pactus-project/pactus/crypto"
-	"github.com/pactus-project/pactus/crypto/bls"
+	"github.com/kehiy/RoboPac/log"
 	pactus "github.com/pactus-project/pactus/www/grpc/gen/go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -27,7 +24,7 @@ func NewClient(endpoint string) (*Client, error) {
 		return nil, err
 	}
 
-	pp.Println("connection established...")
+	log.Info("establishing new connection", "addr", endpoint)
 
 	return &Client{
 		blockchainClient:  pactus.NewBlockchainClient(conn),
@@ -40,7 +37,6 @@ func NewClient(endpoint string) (*Client, error) {
 func (c *Client) GetBlockchainInfo() (*pactus.GetBlockchainInfoResponse, error) {
 	blockchainInfo, err := c.blockchainClient.GetBlockchainInfo(context.Background(), &pactus.GetBlockchainInfoRequest{})
 	if err != nil {
-		log.Printf("error obtaining block height: %v", err)
 		return nil, err
 	}
 	return blockchainInfo, nil
@@ -49,7 +45,6 @@ func (c *Client) GetBlockchainInfo() (*pactus.GetBlockchainInfoResponse, error) 
 func (c *Client) GetBlockchainHeight() (uint32, error) {
 	blockchainInfo, err := c.blockchainClient.GetBlockchainInfo(context.Background(), &pactus.GetBlockchainInfoRequest{})
 	if err != nil {
-		log.Printf("error obtaining block height: %v", err)
 		return 0, err
 	}
 	return blockchainInfo.LastBlockHeight, nil
@@ -58,45 +53,46 @@ func (c *Client) GetBlockchainHeight() (uint32, error) {
 func (c *Client) GetNetworkInfo() (*pactus.GetNetworkInfoResponse, error) {
 	networkInfo, err := c.networkClient.GetNetworkInfo(context.Background(), &pactus.GetNetworkInfoRequest{})
 	if err != nil {
-		log.Printf("error obtaining network information: %v", err)
-
 		return nil, err
 	}
 
 	return networkInfo, nil
 }
 
-func (c *Client) GetPeerInfo(address string) (*pactus.PeerInfo, *bls.PublicKey, error) {
+func (c *Client) GetPeerInfo(address string) (*pactus.PeerInfo, error) {
 	networkInfo, _ := c.GetNetworkInfo()
-	crypto.PublicKeyHRP = "tpublic"
 	if networkInfo != nil {
-		for _, p := range networkInfo.Peers {
-			for _, key := range p.ConsensusKeys {
-				pub, _ := bls.PublicKeyFromString(key)
-				if pub != nil {
-					if pub.ValidatorAddress().String() == address {
-						return p, pub, nil
+		for _, p := range networkInfo.ConnectedPeers {
+			for _, addr := range p.ConsensusAddress {
+				if addr != "" {
+					if addr == address {
+						return p, nil
 					}
 				}
 			}
 		}
 	}
-	return nil, nil, errors.New("peer does not exist")
+	return nil, errors.New("peer does not exist")
 }
 
-func (c *Client) IsValidator(address string) (bool, error) {
-	validators, err := c.blockchainClient.GetValidatorAddresses(context.Background(),
-		&pactus.GetValidatorAddressesRequest{})
+func (c *Client) GetValidatorInfo(address string) (*pactus.GetValidatorResponse, error) {
+	validator, err := c.blockchainClient.GetValidator(context.Background(),
+		&pactus.GetValidatorRequest{Address: address})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	for _, a := range validators.Addresses {
-		pp.Println(a)
-		if a == address {
-			return true, nil
-		}
+
+	return validator, nil
+}
+
+func (c *Client) GetValidatorInfoByNumber(num int32) (*pactus.GetValidatorResponse, error) {
+	validator, err := c.blockchainClient.GetValidatorByNumber(context.Background(),
+		&pactus.GetValidatorByNumberRequest{Number: num})
+	if err != nil {
+		return nil, err
 	}
-	return false, nil
+
+	return validator, nil
 }
 
 func (c *Client) TransactionData(hash string) (*pactus.TransactionInfo, error) {
@@ -112,10 +108,10 @@ func (c *Client) TransactionData(hash string) (*pactus.TransactionInfo, error) {
 	return data.GetTransaction(), nil
 }
 
-func (c *Client) LastBlockTime() (uint32, error) {
+func (c *Client) LastBlockTime() (uint32, uint32, error) {
 	info, err := c.blockchainClient.GetBlockchainInfo(context.Background(), &pactus.GetBlockchainInfoRequest{})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	lastBlockTime, err := c.blockchainClient.GetBlock(context.Background(), &pactus.GetBlockRequest{
@@ -123,7 +119,7 @@ func (c *Client) LastBlockTime() (uint32, error) {
 		Verbosity: pactus.BlockVerbosity_BLOCK_INFO,
 	})
 
-	return lastBlockTime.BlockTime, err
+	return lastBlockTime.BlockTime, info.LastBlockHeight, err
 }
 
 func (c *Client) GetNodeInfo() (*pactus.GetNodeInfoResponse, error) {
@@ -133,6 +129,24 @@ func (c *Client) GetNodeInfo() (*pactus.GetNodeInfoResponse, error) {
 	}
 
 	return info, err
+}
+
+func (c *Client) GetTransactionData(txID string) (*pactus.GetTransactionResponse, error) {
+	return c.transactionClient.GetTransaction(context.Background(), &pactus.GetTransactionRequest{
+		Id:        []byte(txID),
+		Verbosity: pactus.TransactionVerbosity_TRANSACTION_DATA,
+	})
+}
+
+func (c *Client) GetBalance(address string) (int64, error) {
+	account, err := c.blockchainClient.GetAccount(context.Background(), &pactus.GetAccountRequest{
+		Address: address,
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return account.Account.Balance, nil
 }
 
 func (c *Client) Close() error {

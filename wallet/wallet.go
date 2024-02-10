@@ -1,13 +1,14 @@
 package wallet
 
 import (
-	"log"
 	"os"
 
 	"github.com/kehiy/RoboPac/config"
+	"github.com/kehiy/RoboPac/log"
+	"github.com/kehiy/RoboPac/utils"
 	"github.com/pactus-project/pactus/crypto"
 	"github.com/pactus-project/pactus/crypto/bls"
-	"github.com/pactus-project/pactus/util"
+	"github.com/pactus-project/pactus/types/tx/payload"
 	pwallet "github.com/pactus-project/pactus/wallet"
 )
 
@@ -18,75 +19,119 @@ type Balance struct {
 
 type Wallet struct {
 	address  string
-	wallet   *pwallet.Wallet
 	password string
+	wallet   *pwallet.Wallet
+	logger   *log.SubLogger
 }
 
-func Open(cfg *config.Config) *Wallet {
+func Open(cfg *config.Config, logger *log.SubLogger) IWallet {
 	if doesWalletExist(cfg.WalletPath) {
+
 		wt, err := pwallet.Open(cfg.WalletPath, true)
 		if err != nil {
-			log.Printf("error opening existing wallet: %v", err)
-			return nil
+			logger.Fatal("error opening existing wallet", "err", err)
 		}
-		err = wt.Connect(cfg.Servers[0])
+
+		err = wt.Connect(cfg.LocalNode)
 		if err != nil {
-			log.Printf("error establishing connection: %v", err)
-			return nil
+			logger.Fatal("error establishing connection", "err", err)
 		}
-		return &Wallet{wallet: wt, address: cfg.FaucetAddress, password: cfg.WalletPassword}
+
+		return &Wallet{
+			wallet:   wt,
+			address:  cfg.WalletAddress,
+			password: cfg.WalletPassword,
+			logger:   logger,
+		}
 	}
+
 	// if the wallet does not exist, create one
 	return nil
 }
 
-func (w *Wallet) BondTransaction(pubKey, toAddress string, amount float64, memo string) (string, error) {
+func (w *Wallet) BondTransaction(pubKey, toAddress, memo string, amount int64) (string, error) {
 	opts := []pwallet.TxOption{
-		pwallet.OptionFee(util.CoinToChange(0)),
 		pwallet.OptionMemo(memo),
 	}
 	tx, err := w.wallet.MakeBondTx(w.address, toAddress, pubKey,
-		util.CoinToChange(amount), opts...)
+		amount, opts...)
 	if err != nil {
-		log.Printf("error creating bond transaction: %v", err)
+		w.logger.Error("error creating bond transaction", "err", err, "to",
+			toAddress, "amount", utils.AtomicToCoin(amount))
 		return "", err
 	}
 	// sign transaction
 	err = w.wallet.SignTransaction(w.password, tx)
 	if err != nil {
-		log.Printf("error signing bond transaction: %v", err)
+		w.logger.Error("error signing bond transaction", "err", err,
+			"to", toAddress, "amount", utils.AtomicToCoin(amount))
 		return "", err
 	}
 
 	// broadcast transaction
 	res, err := w.wallet.BroadcastTransaction(tx)
 	if err != nil {
-		log.Printf("error broadcasting bond transaction: %v", err)
+		w.logger.Error("error broadcasting bond transaction", "err", err,
+			"to", toAddress, "amount", utils.AtomicToCoin(amount))
 		return "", err
 	}
 
 	err = w.wallet.Save()
 	if err != nil {
-		log.Printf("error saving wallet transaction history: %v", err)
+		w.logger.Error("error saving wallet transaction history", "err", err,
+			"to", toAddress, "amount", utils.AtomicToCoin(amount))
 	}
 	return res, nil // return transaction hash
 }
 
-func (w *Wallet) GetBalance() *Balance {
-	balance := &Balance{Available: 0, Staked: 0}
-	b, err := w.wallet.Balance(w.address)
+func (w *Wallet) TransferTransaction(pubKey, toAddress, memo string, amount int64) (string, error) {
+	fee, err := w.wallet.CalculateFee(int64(amount), payload.TypeTransfer)
 	if err != nil {
-		log.Printf("error getting balance: %v", err)
-		return balance
-	}
-	balance.Available = util.ChangeToCoin(b)
-	stake, err := w.wallet.Stake(w.address)
-	if err != nil {
-		log.Printf("error getting staking amount: %v", err)
-		return balance
+		return "", err
 	}
 
-	balance.Staked = util.ChangeToCoin(stake)
+	opts := []pwallet.TxOption{
+		pwallet.OptionFee(fee),
+		pwallet.OptionMemo(memo),
+	}
+
+	tx, err := w.wallet.MakeTransferTx(w.address, toAddress, int64(amount), opts...)
+	if err != nil {
+		w.logger.Error("error creating transfer transaction", "err", err,
+			"to", toAddress, "amount", utils.AtomicToCoin(amount))
+		return "", err
+	}
+
+	// sign transaction
+	err = w.wallet.SignTransaction(w.password, tx)
+	if err != nil {
+		w.logger.Error("error signing transfer transaction", "err", err,
+			"to", toAddress, "amount", utils.AtomicToCoin(amount))
+		return "", err
+	}
+
+	// broadcast transaction
+	res, err := w.wallet.BroadcastTransaction(tx)
+	if err != nil {
+		w.logger.Error("error broadcasting transfer transaction", "err", err,
+			"to", toAddress, "amount", utils.AtomicToCoin(amount))
+		return "", err
+	}
+
+	err = w.wallet.Save()
+	if err != nil {
+		w.logger.Error("error saving wallet transaction history", "err", err,
+			"to", toAddress, "amount", utils.AtomicToCoin(amount))
+	}
+	return res, nil // return transaction hash
+}
+
+func (w *Wallet) Address() string {
+	return w.address
+}
+
+func (w *Wallet) Balance() int64 {
+	balance, _ := w.wallet.Balance(w.address)
 	return balance
 }
 
